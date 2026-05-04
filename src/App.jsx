@@ -6,37 +6,49 @@ const todayKey = () => new Date().toISOString().slice(0, 10);
 const fmtSec = s => `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
 const fmtDate = (d = new Date()) => `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日 星期${"日一二三四五六"[d.getDay()]}`;
 
-// ── 本地存储（替换Claude专属storage）──
+const EMPTY = { meditations: [], prayerLogs: [], intercessions: [], library: [], sessions: {}, reviews: [] };
+const USER_ID = "main_user";
+
+// ── Supabase 云端同步 ──
+const SB_URL = import.meta.env.VITE_SUPABASE_URL;
+const SB_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
+const sbHeaders = { "apikey": SB_KEY, "Authorization": `Bearer ${SB_KEY}`, "Content-Type": "application/json" };
+
 const DB = {
-  get: (k) => { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : null; } catch { return null; } },
-  set: (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} }
+  async get() {
+    try {
+      const r = await fetch(`${SB_URL}/rest/v1/devotion_data?user_id=eq.${USER_ID}&select=data`, { headers: sbHeaders });
+      const rows = await r.json();
+      return rows?.[0]?.data || null;
+    } catch { return null; }
+  },
+  async set(v) {
+    try {
+      await fetch(`${SB_URL}/rest/v1/devotion_data`, {
+        method: "POST",
+        headers: { ...sbHeaders, "Prefer": "resolution=merge-duplicates" },
+        body: JSON.stringify({ user_id: USER_ID, data: v, updated_at: new Date().toISOString() })
+      });
+    } catch {}
+  }
 };
 
-// ── Anthropic API（使用环境变量中的API Key）──
+// ── Anthropic AI ──
 async function ai(prompt, sys = "你是一位有圣经神学根基的灵修引导者，语气温和深刻，请用简体中文回答。") {
   const apiKey = import.meta.env.VITE_ANTHROPIC_API_KEY;
-  if (!apiKey) return "⚠️ 请在 .env 文件中设置 VITE_ANTHROPIC_API_KEY";
+  if (!apiKey) return "⚠️ 请设置 VITE_ANTHROPIC_API_KEY";
   try {
     const r = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-api-key": apiKey,
-        "anthropic-version": "2023-06-01",
-        "anthropic-dangerous-direct-browser-access": "true"
-      },
-      body: JSON.stringify({
-        model: "claude-sonnet-4-20250514",
-        max_tokens: 1000,
-        system: sys,
-        messages: [{ role: "user", content: prompt }]
-      })
+      headers: { "Content-Type": "application/json", "x-api-key": apiKey, "anthropic-version": "2023-06-01", "anthropic-dangerous-direct-browser-access": "true" },
+      body: JSON.stringify({ model: "claude-sonnet-4-20250514", max_tokens: 1000, system: sys, messages: [{ role: "user", content: prompt }] })
     });
     const d = await r.json();
     return d.content?.[0]?.text || "（AI暂时无法响应）";
   } catch { return "（网络错误，请稍后重试）"; }
 }
 
+// ── UI 组件 ──
 const Card = ({ children, style = {} }) => (
   <div style={{ background: "#fff", borderRadius: 12, padding: 16, marginBottom: 14, border: "0.5px solid #e5e7eb", ...style }}>{children}</div>
 );
@@ -141,8 +153,8 @@ function Word({ ctx }) {
     if (!txt.trim()) return;
     setLoading(true); setGuide("");
     const g = await ai(
-      `圣经经文：${ref || "未注明"}\n\n经文：${txt}\n\n请提供：\n1. 4-5个帮助深度默想的问题（用"你"的角度提问，引导进入经文）\n2. 2-3个灵修洞见（💡标注，神在这段话要说的核心信息）\n3. 一个具体的生活应用方向（🌱标注）`,
-      "你是一位有深厚圣经神学根基的灵修引导者。帮助这位基督徒深度默想神的话语，用简体中文，语气温暖亲切。"
+      `圣经经文：${ref || "未注明"}\n\n经文：${txt}\n\n请提供：\n1. 4-5个帮助深度默想的问题（用"你"的角度提问）\n2. 2-3个灵修洞见（💡标注）\n3. 一个具体的生活应用方向（🌱标注）`,
+      "你是一位有深厚圣经神学根基的灵修引导者。用简体中文，语气温暖亲切。"
     );
     setGuide(g); setLoading(false);
   };
@@ -301,7 +313,6 @@ function Library({ ctx }) {
   const [content, setContent] = useState("");
   const [insight, setInsight] = useState("");
   const [loading, setLoading] = useState(false);
-
   const TYPES = [{ v: "sermon", l: "讲道笔记" }, { v: "article", l: "文章收藏" }, { v: "family", l: "家庭灵修" }, { v: "other", l: "其他" }];
 
   const getInsight = async () => {
@@ -309,7 +320,7 @@ function Library({ ctx }) {
     setLoading(true);
     const ins = await ai(
       `以下是我的属灵笔记：\n\n${content}\n\n请帮我：\n1. 提炼2-3个核心真理要点\n2. 提供3个具体可行的生活操练建议\n3. 列出1-2节相关经文\n4. 给出一个本周可以实践的「行道挑战」`,
-      "你是一位基督徒生命导师，帮助人把神的话语应用在日常生活和家庭中。建议要真实可行，请用简体中文。"
+      "你是一位基督徒生命导师，帮助人把神的话语应用在日常生活和家庭中。简体中文。"
     );
     setInsight(ins); setLoading(false);
   };
@@ -328,8 +339,7 @@ function Library({ ctx }) {
     return (
       <div>
         <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14 }}>
-          <button onClick={() => { setView("list"); setSel(null); }}
-            style={{ background: "none", border: "0.5px solid #e5e7eb", color: "#6b7280", padding: "5px 12px", borderRadius: 8, cursor: "pointer", fontSize: 12 }}>← 返回</button>
+          <button onClick={() => { setView("list"); setSel(null); }} style={{ background: "none", border: "0.5px solid #e5e7eb", color: "#6b7280", padding: "5px 12px", borderRadius: 8, cursor: "pointer", fontSize: 12 }}>← 返回</button>
           <span style={{ fontSize: 18, fontWeight: 500, color: NAVY }}>{TYPES.find(t => t.v === item.type)?.l}</span>
         </div>
         <Card>
@@ -358,10 +368,7 @@ function Library({ ctx }) {
           <label style={{ fontSize: 12, color: "#6b7280", display: "block", marginBottom: 6 }}>类型</label>
           <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
             {TYPES.map(t => (
-              <button key={t.v} onClick={() => setType(t.v)}
-                style={{ padding: "5px 12px", background: type === t.v ? NAVY : "#f9fafb", color: type === t.v ? "#fff" : "#6b7280", border: `0.5px solid ${type === t.v ? NAVY : "#e5e7eb"}`, borderRadius: 8, cursor: "pointer", fontSize: 12 }}>
-                {t.l}
-              </button>
+              <button key={t.v} onClick={() => setType(t.v)} style={{ padding: "5px 12px", background: type === t.v ? NAVY : "#f9fafb", color: type === t.v ? "#fff" : "#6b7280", border: `0.5px solid ${type === t.v ? NAVY : "#e5e7eb"}`, borderRadius: 8, cursor: "pointer", fontSize: 12 }}>{t.l}</button>
             ))}
           </div>
         </div>
@@ -374,9 +381,7 @@ function Library({ ctx }) {
           <TA value={content} onChange={setContent} placeholder="在此输入讲道笔记、文章要点、灵修心得..." rows={8} />
         </div>
         {!insight
-          ? <Btn onClick={getInsight} disabled={loading || !content.trim()} style={{ width: "100%", background: GOLD, marginBottom: 10 }}>
-            {loading ? "AI整合分析中..." : "💡 获取AI应用建议"}
-          </Btn>
+          ? <Btn onClick={getInsight} disabled={loading || !content.trim()} style={{ width: "100%", background: GOLD, marginBottom: 10 }}>{loading ? "AI整合分析中..." : "💡 获取AI应用建议"}</Btn>
           : <div style={{ padding: 12, background: GOLD_BG, borderRadius: 8, marginBottom: 12, borderLeft: `4px solid ${GOLD}` }}>
             <div style={{ fontWeight: 500, fontSize: 13, color: GOLD, marginBottom: 6 }}>💡 AI 真理整合 & 应用建议</div>
             <div style={{ fontSize: 13, lineHeight: 1.85, whiteSpace: "pre-wrap", fontFamily: "Georgia, serif" }}>{insight}</div>
@@ -394,7 +399,7 @@ function Library({ ctx }) {
         <Btn sm onClick={() => setView("add")}>+ 新增</Btn>
       </div>
       {(data.library || []).length === 0
-        ? <Card><div style={{ textAlign: "center", color: "#6b7280", padding: "24px 0", fontSize: 14 }}>资料库暂无内容<br /><span style={{ fontSize: 12 }}>点击「+ 新增」添加讲道笔记或文章</span></div></Card>
+        ? <Card><div style={{ textAlign: "center", color: "#6b7280", padding: "24px 0", fontSize: 14 }}>资料库暂无内容<br /><span style={{ fontSize: 12 }}>点击「+ 新增」添加讲道笔记</span></div></Card>
         : (data.library || []).map(r => (
           <div key={r.id} onClick={() => { setSel(r.id); setView("view"); }} style={{ cursor: "pointer" }}>
             <Card>
@@ -420,51 +425,33 @@ function Tracker({ ctx }) {
   const [aiIns, setAiIns] = useState("");
   const [loading, setLoading] = useState(false);
   const [ok, setOk] = useState(false);
-
-  const sessions = data.sessions || {};
-  const meds = data.meditations || [];
-  const inters = data.intercessions || [];
-  const plogs = data.prayerLogs || [];
-  const lib = data.library || [];
+  const sessions = data.sessions || {}, meds = data.meditations || [], inters = data.intercessions || [], plogs = data.prayerLogs || [], lib = data.library || [];
   const totalSec = Object.values(sessions).reduce((a, b) => a + b, 0);
   const answered = inters.filter(i => i.answered).length;
-
   const last7 = Array.from({ length: 7 }, (_, i) => {
     const d = new Date(); d.setDate(d.getDate() - 6 + i);
     const k = d.toISOString().slice(0, 10);
     return { l: `${d.getMonth() + 1}/${d.getDate()}`, sec: sessions[k] || 0 };
   });
   const maxS = Math.max(...last7.map(d => d.sec), 300);
-
   const getInsight = async () => {
     setLoading(true);
     const stats = `总灵修时长：${Math.floor(totalSec / 60)}分钟\n默想次数：${meds.length}次\n祷告记录：${plogs.length}次\n代祷应允：${answered}/${inters.length}\n资料库：${lib.length}篇\n本周自评：${score}/5\n周反思：${review}`;
-    const ins = await ai(
-      `根据以下灵修数据，请提供属灵成长分析：\n\n${stats}\n\n请包括：\n1. 一句真诚的肯定与鼓励\n2. 2-3个成长点或薄弱环节\n3. 下周2-3个具体改进建议\n4. 一段适合现在状态的经文鼓励`,
-      "你是一位关怀灵魂成长的属灵导师。请用温和鼓励的语气，帮助人看见神的恩典和成长空间。简体中文。"
-    );
+    const ins = await ai(`根据以下灵修数据，请提供属灵成长分析：\n\n${stats}\n\n请包括：\n1. 一句真诚的肯定与鼓励\n2. 2-3个成长点或薄弱环节\n3. 下周2-3个具体改进建议\n4. 一段适合现在状态的经文鼓励`, "你是一位关怀灵魂成长的属灵导师。温和鼓励的语气，简体中文。");
     setAiIns(ins); setLoading(false);
   };
-
   const saveReview = async () => {
     const entry = { id: Date.now(), date: todayKey(), score, review, insight: aiIns };
     const reviews = [entry, ...(data.reviews || [])];
     await save({ reviews });
     setOk(true); setTimeout(() => setOk(false), 2000);
   };
-
   const SLABELS = ["", "需要更多委身", "有所起伏", "稳定同行", "颇有突破", "深深与神同在"];
-
   return (
     <div>
       <div style={{ fontSize: 18, fontWeight: 500, color: NAVY, marginBottom: 14 }}>📊 灵修成长评估</div>
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 14 }}>
-        {[
-          { icon: "⏱", l: "总灵修时长", v: `${Math.floor(totalSec / 3600)}h ${Math.floor((totalSec % 3600) / 60)}m` },
-          { icon: "📖", l: "默想总次数", v: `${meds.length}次` },
-          { icon: "🙏", l: "祷告记录", v: `${plogs.length}次` },
-          { icon: "✅", l: "祷告蒙应允", v: `${answered}/${inters.length}` },
-        ].map(s => (
+        {[{ icon: "⏱", l: "总灵修时长", v: `${Math.floor(totalSec / 3600)}h ${Math.floor((totalSec % 3600) / 60)}m` }, { icon: "📖", l: "默想总次数", v: `${meds.length}次` }, { icon: "🙏", l: "祷告记录", v: `${plogs.length}次` }, { icon: "✅", l: "祷告蒙应允", v: `${answered}/${inters.length}` }].map(s => (
           <Card key={s.l} style={{ textAlign: "center", marginBottom: 0 }}>
             <div style={{ fontSize: 20 }}>{s.icon}</div>
             <div style={{ fontSize: 18, fontWeight: 500, color: NAVY, margin: "4px 0" }}>{s.v}</div>
@@ -489,10 +476,7 @@ function Tracker({ ctx }) {
           <div style={{ fontSize: 12, color: "#6b7280", marginBottom: 8 }}>这周与神同行的感受：</div>
           <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
             {[1, 2, 3, 4, 5].map(n => (
-              <button key={n} onClick={() => setScore(n)}
-                style={{ width: 34, height: 34, borderRadius: "50%", border: `2px solid ${n <= score ? GOLD : "#e5e7eb"}`, background: n <= score ? GOLD : "transparent", cursor: "pointer", fontSize: 13, color: n <= score ? "#fff" : "#6b7280", fontWeight: 500 }}>
-                {n}
-              </button>
+              <button key={n} onClick={() => setScore(n)} style={{ width: 34, height: 34, borderRadius: "50%", border: `2px solid ${n <= score ? GOLD : "#e5e7eb"}`, background: n <= score ? GOLD : "transparent", cursor: "pointer", fontSize: 13, color: n <= score ? "#fff" : "#6b7280", fontWeight: 500 }}>{n}</button>
             ))}
             <span style={{ fontSize: 12, color: GOLD, marginLeft: 4 }}>{SLABELS[score]}</span>
           </div>
@@ -519,25 +503,29 @@ export default function App() {
   const [focusSec, setFocusSec] = useState(0);
   const [musicUrl, setMusicUrl] = useState(null);
   const [playing, setPlaying] = useState(false);
-  const [data, setData] = useState(() => DB.get("shengren-data") || { meditations: [], prayerLogs: [], intercessions: [], library: [], sessions: {}, reviews: [] });
-
-  const audioRef = useRef(null);
-  const timerRef = useRef(null);
-  const t0 = useRef(null);
+  const [data, setData] = useState(EMPTY);
+  const [syncing, setSyncing] = useState(false);
+  const audioRef = useRef(null), timerRef = useRef(null), t0 = useRef(null);
   const MIN = 20 * 60;
+
+  // 启动时从云端加载数据
+  useEffect(() => {
+    setSyncing(true);
+    DB.get().then(d => { if (d) setData(d); setSyncing(false); });
+  }, []);
 
   useEffect(() => {
     if (focusOn) {
       t0.current = Date.now() - focusSec * 1000;
       timerRef.current = setInterval(() => setFocusSec(Math.floor((Date.now() - t0.current) / 1000)), 1000);
-    } else { clearInterval(timerRef.current); }
+    } else clearInterval(timerRef.current);
     return () => clearInterval(timerRef.current);
   }, [focusOn]);
 
-  const saveData = (updates) => {
+  const saveData = async (updates) => {
     const nd = { ...data, ...updates };
     setData(nd);
-    DB.set("shengren-data", nd);
+    await DB.set(nd); // 保存到云端
   };
 
   const startFocus = async () => {
@@ -557,17 +545,19 @@ export default function App() {
     if (audioRef.current) { audioRef.current.pause(); setPlaying(false); }
   };
 
-  const handleMusic = (e) => {
-    const f = e.target.files[0]; if (!f) return;
-    setMusicUrl(URL.createObjectURL(f));
-  };
-
+  const handleMusic = (e) => { const f = e.target.files[0]; if (!f) return; setMusicUrl(URL.createObjectURL(f)); };
   const NAV = [{ id: "home", icon: "🏠", l: "首页" }, { id: "word", icon: "📖", l: "默想" }, { id: "prayer", icon: "🙏", l: "祷告" }, { id: "library", icon: "📚", l: "资料库" }, { id: "tracker", icon: "📊", l: "评估" }];
   const ctx = { data, save: saveData, focusOn };
 
   return (
     <div style={{ fontFamily: "Georgia, serif", minHeight: "100vh", background: "#f9fafb", color: "#111827" }}>
       {musicUrl && <audio key={musicUrl} ref={audioRef} src={musicUrl} loop />}
+
+      {/* 云端同步指示 */}
+      {syncing && (
+        <div style={{ background: GOLD, color: "#fff", textAlign: "center", padding: "6px", fontSize: 12 }}>☁️ 同步数据中...</div>
+      )}
+
       {focusOn && (
         <div style={{ position: "sticky", top: 0, zIndex: 100, background: NAVY, color: "#fff", display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 16px" }}>
           <span style={{ fontSize: 15, fontWeight: 500 }}>⏱ {fmtSec(focusSec)}</span>
@@ -583,6 +573,7 @@ export default function App() {
           </div>
         </div>
       )}
+
       <div style={{ maxWidth: 640, margin: "0 auto", padding: "0 14px 88px" }}>
         {screen === "home" && <Home ctx={ctx} startFocus={startFocus} handleMusic={handleMusic} musicUrl={musicUrl} setScreen={setScreen} />}
         {screen === "word" && <Word ctx={ctx} />}
@@ -590,6 +581,7 @@ export default function App() {
         {screen === "library" && <Library ctx={ctx} />}
         {screen === "tracker" && <Tracker ctx={ctx} />}
       </div>
+
       <nav style={{ position: "fixed", bottom: 0, left: 0, right: 0, background: "#fff", borderTop: "0.5px solid #e5e7eb", display: "flex" }}>
         {NAV.map(n => (
           <button key={n.id} onClick={() => setScreen(n.id)}
